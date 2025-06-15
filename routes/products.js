@@ -97,4 +97,12 @@ router.post('/bulk', uploadCSV.single('csv'), (req, res) => {
     });
 });
 
+// ✅ GET /products (legacy)
+router.get('/', (req, res) => {
+  db.query('SELECT * FROM products', (err, result) => {
+    if (err) return res.status(500).send('Error fetching products');
+    res.json(result);
+  });
+});
+
 module.exports = router;

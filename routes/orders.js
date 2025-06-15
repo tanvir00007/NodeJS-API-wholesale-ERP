@@ -166,5 +166,44 @@ router.post('/:id/payment', authenticate, upload.single('invoice'), (req, res) =
   });
 });
 
+// ✅ POST /api/orders/place - Public endpoint (no JWT required)
+router.post('/place-order', (req, res) => {
+  const { buyer_id, username, user_id, total_items, total_price, items } = req.body;
+
+  // Basic validation (optional)
+  if (!buyer_id || !username || !user_id || !total_items || !total_price || !items?.length) {
+    return res.status(400).json({ error: 'Missing required order fields' });
+  }
+
+  const orderSql = `
+    INSERT INTO orders (buyer_id, username, user_id, total_items, total_price, status)
+    VALUES (?, ?, ?, ?, ?, 1)
+  `;
+
+  db.query(orderSql, [buyer_id, username, user_id, total_items, total_price], (err, orderResult) => {
+    if (err) {
+      console.error('❌ INSERT ERROR:', err);
+      return res.status(500).send('Error placing order');
+    }
+
+    const orderId = orderResult.insertId;
+    const itemValues = items.map(item => [orderId, item.name, item.quantity, item.price]);
+
+    const itemsSql = `
+      INSERT INTO order_items (order_id, item_name, quantity, price)
+      VALUES ?
+    `;
+
+    db.query(itemsSql, [itemValues], (err) => {
+      if (err) {
+        console.error('❌ ITEM INSERT ERROR:', err);
+        return res.status(500).send('Error saving order items');
+      }
+      res.json({ success: true, orderId });
+    });
+  });
+});
+
+
 
 module.exports = router;
