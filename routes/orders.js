@@ -26,6 +26,7 @@ router.get('/', authenticate, (req, res) => {
       o.username,
       o.total_items,
       o.total_price,
+      o.discount,
       o.created_at,
       o.updated_at,
       o.status,
@@ -45,9 +46,7 @@ router.get('/', authenticate, (req, res) => {
   });
 });
 
-
-
-// ✅ Enhanced Get Single Order with Items + Full Buyer Info
+// ✅ Get Single Order with Buyer + Items + Discounts
 router.get('/:id', authenticate, (req, res) => {
   const orderId = req.params.id;
 
@@ -65,7 +64,7 @@ router.get('/:id', authenticate, (req, res) => {
   `;
 
   const itemsSql = `
-    SELECT item_name, quantity, price
+    SELECT item_name, quantity, price, discount
     FROM order_items
     WHERE order_id = ?
   `;
@@ -85,35 +84,39 @@ router.get('/:id', authenticate, (req, res) => {
   });
 });
 
-
-// PUT /api/orders/:id/items
+// ✅ Update Order Items + Discounts
 router.put('/:id/items', authenticate, (req, res) => {
   const orderId = req.params.id;
-  const { items, user_id } = req.body;
+  const { items, user_id, order_discount } = req.body;
 
-  // 1. Delete all existing items
+  if (!items?.length) {
+    return res.status(400).json({ error: 'No items provided' });
+  }
+
   const deleteSql = `DELETE FROM order_items WHERE order_id = ?`;
-
-  // 2. Re-insert updated items
   const insertSql = `
-    INSERT INTO order_items (order_id, item_name, quantity, price)
+    INSERT INTO order_items (order_id, item_name, quantity, price, discount)
     VALUES ?
   `;
-
   const itemValues = items.map(item => [
     orderId,
     item.item_name,
     item.quantity,
-    item.price
+    item.price,
+    item.discount || 0
   ]);
 
-  // 3. Calculate totals
   const totalItems = items.reduce((sum, i) => sum + i.quantity, 0);
-  const totalPrice = items.reduce((sum, i) => sum + i.quantity * i.price, 0);
+  const subtotal = items.reduce((sum, i) => sum + (i.quantity * i.price - (i.discount || 0)), 0);
+  const totalPrice = subtotal - (order_discount || 0);
 
-  // 4. Update orders table
   const updateOrderSql = `
-    UPDATE orders SET total_items = ?, total_price = ?, updated_at = NOW(), action_by = ?
+    UPDATE orders 
+    SET total_items = ?, 
+        total_price = ?, 
+        discount = ?, 
+        updated_at = NOW(), 
+        action_by = ?
     WHERE id = ?
   `;
 
@@ -123,17 +126,21 @@ router.put('/:id/items', authenticate, (req, res) => {
     db.query(insertSql, [itemValues], (err2) => {
       if (err2) return res.status(500).json({ error: err2.message });
 
-      db.query(updateOrderSql, [totalItems, totalPrice, user_id, orderId], (err3) => {
+      db.query(updateOrderSql, [totalItems, totalPrice, order_discount || 0, user_id, orderId], (err3) => {
         if (err3) return res.status(500).json({ error: err3.message });
 
-        res.json({ message: 'Order items updated successfully', total_items: totalItems, total_price: totalPrice });
+        res.json({
+          message: 'Order items and discounts updated successfully',
+          total_items: totalItems,
+          total_price: totalPrice,
+          order_discount: order_discount || 0
+        });
       });
     });
   });
 });
 
-
-// PUT /api/orders/:id/status
+// ✅ Update Order Status
 router.put('/:id/status', authenticate, (req, res) => {
   const { status } = req.body;
   const sql = 'UPDATE orders SET status = ? WHERE id = ?';
@@ -143,8 +150,7 @@ router.put('/:id/status', authenticate, (req, res) => {
   });
 });
 
-
-// POST /api/orders/:id/payment
+// ✅ Submit Payment + Upload Invoice
 const upload = require('../routes/upload');
 
 router.post('/:id/payment', authenticate, upload.single('invoice'), (req, res) => {
@@ -166,31 +172,44 @@ router.post('/:id/payment', authenticate, upload.single('invoice'), (req, res) =
   });
 });
 
-// ✅ POST /api/orders/place - Public endpoint (no JWT required)
+// ✅ Place New Order (with optional discounts)
 router.post('/place-order', (req, res) => {
-  const { buyer_id, username, user_id, total_items, total_price, items } = req.body;
+  const {
+    buyer_id,
+    username,
+    user_id,
+    total_items,
+    total_price,
+    discount = 0,
+    items
+  } = req.body;
 
-  // Basic validation (optional)
   if (!buyer_id || !username || !user_id || !total_items || !total_price || !items?.length) {
     return res.status(400).json({ error: 'Missing required order fields' });
   }
 
   const orderSql = `
-    INSERT INTO orders (buyer_id, username, user_id, total_items, total_price, status)
-    VALUES (?, ?, ?, ?, ?, 1)
+    INSERT INTO orders (buyer_id, username, user_id, total_items, total_price, discount, status)
+    VALUES (?, ?, ?, ?, ?, ?, 1)
   `;
 
-  db.query(orderSql, [buyer_id, username, user_id, total_items, total_price], (err, orderResult) => {
+  db.query(orderSql, [buyer_id, username, user_id, total_items, total_price, discount], (err, orderResult) => {
     if (err) {
       console.error('❌ INSERT ERROR:', err);
       return res.status(500).send('Error placing order');
     }
 
     const orderId = orderResult.insertId;
-    const itemValues = items.map(item => [orderId, item.name, item.quantity, item.price]);
+    const itemValues = items.map(item => [
+      orderId,
+      item.name,
+      item.quantity,
+      item.price,
+      item.discount || 0
+    ]);
 
     const itemsSql = `
-      INSERT INTO order_items (order_id, item_name, quantity, price)
+      INSERT INTO order_items (order_id, item_name, quantity, price, discount)
       VALUES ?
     `;
 
@@ -203,7 +222,5 @@ router.post('/place-order', (req, res) => {
     });
   });
 });
-
-
 
 module.exports = router;
